@@ -1,0 +1,614 @@
+    /**
+     * Verifies the page title
+     * 
+     * @param expectedTitle The expected page title (can contain test data placeholders)
+     * @throws Throwable if verification fails
+     */
+    @Then("I verify page title is {string}")
+    public void verifyPageTitle(String expectedTitle) throws Throwable {
+        try {
+            String resolvedTitle = replaceTestDataPlaceholders(expectedTitle);
+            logger.info("Verifying page title: {}", resolvedTitle);
+            
+            // Wait for the page title to match the expected title
+            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+            wait.until(ExpectedConditions.titleContains(resolvedTitle));
+            
+            String actualTitle = driver.getTitle();
+            
+            if (actualTitle.contains(resolvedTitle)) {
+                logger.info("Page title verified: {}", actualTitle);
+                ReportManager.logPass("Verify page title", 
+                    String.format("Title matches: '%s' contains '%s'", actualTitle, resolvedTitle));
+            } else {
+                logger.error("Page title verification failed. Expected: {}, Actual: {}", resolvedTitle, actualTitle);
+                ReportManager.logFail("Verify page title", 
+                    String.format("Title mismatch. Expected: '%s', Actual: '%s'", resolvedTitle, actualTitle));
+                throw new AssertionError("Page title verification failed. Expected: " + resolvedTitle + ", Actual: " + actualTitle);
+            }
+        } catch (Exception e) {
+            logger.error("Error verifying page title: {}", e.getMessage());
+            ReportManager.logFail("Verify page title", "Error: " + e.getMessage());
+            throw e;
+        }
+    }
+    
+    /**
+     * Verifies that an element is visible on the page
+     * 
+     * @param elementName The name of the element to verify
+     * @param pageName The page where the element is located
+     * @throws Throwable if verification fails
+     */
+    public void verifyElementIsVisible(String elementName, String pageName) throws Throwable {
+        try {
+            // Replace test data placeholders in both parameters
+            String resolvedElementName = replaceTestDataPlaceholders(elementName);
+            String resolvedPageName = replaceTestDataPlaceholders(pageName);
+            
+            logger.info("Verifying element '{}' is visible on page '{}'", resolvedElementName, resolvedPageName);
+            
+            // Find the element using the OR repository
+            WebElement element = findElement(resolvedElementName, resolvedPageName);
+            
+            // Wait for element to be visible
+            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+            wait.until(ExpectedConditions.visibilityOf(element));
+            
+            // Scroll element into view for better visibility
+            ((JavascriptExecutor) driver).executeScript("arguments[0].scrollIntoView(true);", element);
+            
+            // Highlight element (following existing pattern from other methods)
+            highlightElement(element);
+            
+            // Verify element is displayed
+            if (element.isDisplayed()) {
+                logger.info("Element '{}' on page '{}' is visible", resolvedElementName, resolvedPageName);
+                ReportManager.logPass("Verify element visibility", 
+                    String.format("Element '%s' on page '%s' is visible", resolvedElementName, resolvedPageName));
+            } else {
+                throw new AssertionError("Element is not displayed");
+            }
+            
+        } catch (Exception e) {
+            String errorMsg = String.format("Failed to verify element '%s' is visible on page '%s': %s", 
+                elementName, pageName, e.getMessage());
+            logger.error(errorMsg);
+            ReportManager.logFail("Verify element visibility", errorMsg);
+            throw new RuntimeException(errorMsg, e);
+        }
+    }
+
+    /**
+     * Checks if an element is visible on the page
+     * 
+     * @param elementName The name of the element to check
+     * @param pageName The page where the element is located
+     * @return true if element exists and is displayed, false otherwise
+     */
+    public boolean isElementVisible(String elementName, String pageName) {
+        try {
+            // Replace test data placeholders in both parameters
+            String resolvedElementName = replaceTestDataPlaceholders(elementName);
+            String resolvedPageName = replaceTestDataPlaceholders(pageName);
+            
+            logger.debug("Checking if element '{}' is visible on page '{}'", resolvedElementName, resolvedPageName);
+            
+            // Find the element using the OR repository
+            WebElement element = findElement(resolvedElementName, resolvedPageName);
+            
+            // Return true if element exists and is displayed
+            return element != null && element.isDisplayed();
+            
+        } catch (Exception e) {
+            logger.debug("Element '{}' on page '{}' is not visible: {}", elementName, pageName, e.getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Clears the text from the specified field on the given page.
+     *
+     * @param fieldName The name of the field
+     * @param pageName  The name of the page
+     */
+    public void clearField(String fieldName, String pageName) {
+        try {
+            WebElement field = getFieldWebElement(fieldName, pageName);
+            field.click();  // Focus the field first
+            field.clear();  // Clear using clear()
+            
+            // Optionally clear via keyboard (for JS-controlled inputs)
+            field.sendKeys(Keys.CONTROL + "a");
+            field.sendKeys(Keys.DELETE);
+            
+            logger.info("Cleared text from field '{}' on page '{}'", fieldName, pageName);
+        } catch (Exception e) {
+            logger.error("Failed to clear field '{}' on page '{}': {}", fieldName, pageName, e.getMessage());
+            throw new RuntimeException("Unable to clear field: " + fieldName + " on page: " + pageName, e);
+        }
+    }
+
+
+    /**
+     * Gets the current value from the field.
+     *
+     * @param fieldName The name of the field (from object repo)
+     * @param pageName  The page the field is on
+     * @return The value (usually from input value attribute)
+     */
+    public String getFieldValue(String fieldName, String pageName) {
+        try {
+            By locator = objectRepo.getLocator(fieldName, pageName);
+            WebElement field = driver.findElement(locator);
+
+            // For input, textarea
+            if (field.getTagName().equalsIgnoreCase("input") || field.getTagName().equalsIgnoreCase("textarea")) {
+                return field.getAttribute("value").trim();
+            }
+
+            // For divs/spans acting like fields
+            return field.getText().trim();
+
+        } catch (NoSuchElementException e) {
+            logger.error("Unable to locate field: {} on page: {}", fieldName, pageName);
+            throw new RuntimeException("Field not found: " + fieldName + " on page: " + pageName);
+        } catch (Exception e) {
+            logger.error("Error fetching value from field: {} on page: {} - {}", fieldName, pageName, e.getMessage());
+            throw new RuntimeException("Unable to get value from field: " + fieldName + " on page: " + pageName);
+        }
+    }
+
+
+    /**
+     * Finds and returns the WebElement for a given field and page from the object repository.
+     *
+     * @param fieldName The field name
+     * @param pageName  The page name
+     * @return The WebElement representing the field
+     */
+    public WebElement getFieldWebElement(String fieldName, String pageName) {
+        try {
+            By locator = objectRepo.getLocator(fieldName, pageName); // Assumes objectRepo utility exists
+            return driver.findElement(locator);
+        } catch (Exception e) {
+            logger.error("Failed to locate field '{}' on page '{}': {}", fieldName, pageName, e.getMessage());
+            throw new RuntimeException("Element not found: " + fieldName + " on page: " + pageName, e);
+        }
+    }
+
+
+    /**
+     * Verifies the master name is displayed correctly
+     * 
+     * @param expectedMasterName The expected master name (can contain test data placeholders)
+     * @throws Throwable if verification fails
+     */
+    @Then("I verify master name is {string}")
+    public void verifyMasterName(String expectedMasterName) throws Throwable {
+        try {
+            // Replace test data placeholders
+            String resolvedMasterName = replaceTestDataPlaceholders(expectedMasterName);
+            
+            logger.info("Verifying master name is: {}", resolvedMasterName);
+            
+            // Wait for text to be present on the page
+            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+            wait.until(ExpectedConditions.textToBePresentInElementLocated(By.tagName("body"), resolvedMasterName));
+            
+            // Log success
+            ReportManager.logPass("Verify master name", "Master name verified: " + resolvedMasterName);
+            
+        } catch (Exception e) {
+            logger.error("Error verifying master name: {}", e.getMessage());
+            ReportManager.logFail("Verify master name", "Error: " + e.getMessage());
+            throw e;
+        }
+    }
+    
+    /**
+     * Verifies if element exists on the page
+     * 
+     * @param elementName The name of the element in the object repository
+     * @param pageName The name of the page in the object repository
+     * @throws Throwable if verification fails
+     */
+    @Then("I should see {string} on {string} page")
+    public void verifyElementExists(String elementName, String pageName) throws Throwable {
+        try {
+            // Replace test data placeholders in element and page names
+            elementName = replaceTestDataPlaceholders(elementName);
+            pageName = replaceTestDataPlaceholders(pageName);
+            
+            logger.info("Verifying element exists: {} on {} page", elementName, pageName);
+            
+            // Find the element using the OR loader
+            WebElement element = findElement(elementName, pageName);
+            
+            // Scroll element into view
+            ((JavascriptExecutor) driver).executeScript("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element);
+            
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logger.debug("Thread interrupted while waiting after scrolling: {}", e.getMessage());
+            }
+            
+            // Highlight element
+            highlightElement(element);
+            
+            // Log success if element is found and visible
+            if (element.isDisplayed()) {
+                logger.info("Element found: {} on {} page", elementName, pageName);
+                ReportManager.logInfo("Element visible: " + elementName + " on " + pageName + " page");
+                ReportManager.logPass("Verify element exists", "Element exists: " + elementName + " on " + pageName + " page");
+            } else {
+                logger.warn("Element found but not visible: {} on {} page", elementName, pageName);
+                ReportManager.logFail("Verify element exists", "Element found but not visible: " + elementName + " on " + pageName + " page");
+                throw new AssertionError("Element found but not visible: " + elementName + " on " + pageName + " page");
+            }
+        } catch (Exception e) {
+            logger.error("Error verifying element exists: {} on {} page - {}", elementName, pageName, e.getMessage());
+            ReportManager.logFail("Verify element exists", "Error: " + e.getMessage());
+            throw e;
+        }
+    }
+    
+    /**
+     * Enters text into a field
+     * 
+     * @param text The text to enter (can contain test data placeholders)
+     * @param elementName The name of the element in the object repository
+     * @param pageName The name of the page in the object repository
+     * @throws Throwable if operation fails
+     */
+    @When("I enter {string} in {string} field on {string} page")
+    public void enterTextInField(String text, String elementName, String pageName) throws Throwable {
+        try {
+            // Replace test data placeholders
+            String resolvedText = replaceTestDataPlaceholders(text);
+            elementName = replaceTestDataPlaceholders(elementName);
+            pageName = replaceTestDataPlaceholders(pageName);
+
+            logger.info("Entering text '{}' into field: {} on {} page", resolvedText, elementName, pageName);
+
+            // Find the element
+            WebElement element = findElement(elementName, pageName);
+
+            // Log element details
+            logger.info("Tag: {}", element.getTagName());
+            logger.info("Type: {}", element.getAttribute("type"));
+            logger.info("Readonly: {}", element.getAttribute("readonly"));
+            logger.info("Disabled: {}", element.getAttribute("disabled"));
+            logger.info("Current Value: {}", element.getAttribute("value"));
+
+            // Use Actions class to clear field
+            Actions actions = new Actions(driver);
+            actions.moveToElement(element)
+                   .click()
+                   .keyDown(Keys.CONTROL)
+                   .sendKeys("a")
+                   .keyUp(Keys.CONTROL)
+                   .sendKeys(Keys.DELETE)
+                   .perform();
+
+            Thread.sleep(300); // Small pause before typing
+
+            // Type the new value
+            element.sendKeys(resolvedText);
+
+            // Optional: fire input/change event if required
+            ((JavascriptExecutor) driver).executeScript(
+                "arguments[0].dispatchEvent(new Event('input')); arguments[0].dispatchEvent(new Event('change'));",
+                element
+            );
+
+            ReportManager.logPass("Enter text", String.format("Text '%s' entered in %s field", resolvedText, elementName));
+        } catch (Exception e) {
+            logger.error("Error entering text: {}", e.getMessage());
+            ReportManager.logFail("Enter text", "Error: " + e.getMessage());
+            throw e;
+        }
+    }
+
+    
+    /**
+     * Clicks on an element with enhanced error handling for intercepted clicks
+     * 
+     * @param elementName The name of the element in the object repository
+     * @param pageName The name of the page in the object repository
+     * @throws Throwable if operation fails
+     */
+    @When("I click on {string} on {string} page")
+    public void clickOnElement(String elementName, String pageName) throws Throwable {
+        try {
+            // Replace test data placeholders
+            elementName = replaceTestDataPlaceholders(elementName);
+            pageName = replaceTestDataPlaceholders(pageName);
+            
+            logger.info("Clicking on element: {} on {} page", elementName, pageName);
+            
+            // Find the element
+            WebElement element = findElement(elementName, pageName);
+            
+            // Scroll element into view
+            ((JavascriptExecutor) driver).executeScript("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element);
+            
+            // Wait for any overlays or loading spinners to disappear
+            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+            
+            // Wait for element to be clickable (not obscured by other elements)
+            wait.until(ExpectedConditions.elementToBeClickable(element));
+            
+            // Additional wait for potential overlays/loading indicators
+            try {
+                // Check for common overlay/loading selectors that might be blocking the click
+                List<WebElement> overlays = driver.findElements(By.cssSelector(".loading, .overlay, .spinner, [class*='loading'], [class*='overlay']"));
+                if (!overlays.isEmpty()) {
+                    logger.info("Found potential overlay elements, waiting for them to disappear");
+                    wait.until(ExpectedConditions.invisibilityOfAllElements(overlays));
+                }
+            } catch (Exception e) {
+                logger.debug("No overlays found or timeout waiting for overlay to disappear: {}", e.getMessage());
+            }
+            
+            // Highlight element
+            highlightElement(element);
+            
+            try {
+                // Try normal click first
+                element.click();
+                logger.info("Successfully clicked element: {} on {} page", elementName, pageName);
+            } catch (ElementClickInterceptedException e) {
+                logger.warn("Normal click intercepted, trying JavaScript click: {}", e.getMessage());
+                
+                // Fallback to JavaScript click if normal click is intercepted
+                ((JavascriptExecutor) driver).executeScript("arguments[0].click();", element);
+                logger.info("Successfully clicked element using JavaScript: {} on {} page", elementName, pageName);
+            }
+            
+            // Log success
+            ReportManager.logPass("Click element", "Clicked on: " + elementName + " on " + pageName + " page");
+            
+        } catch (Exception e) {
+            logger.error("Error clicking on element: {}", e.getMessage());
+            ReportManager.logFail("Click element", "Error: " + e.getMessage());
+            throw e;
+        }
+    }
+    
+    /**
+     * Verifies if an element contains specific text
+     * 
+     * @param elementName The name of the element
+     * @param pageName The name of the page
+     * @param expectedText The expected text
+     * @throws Throwable if verification fails
+     */
+    @Then("I verify {string} on {string} page contains text {string}")
+    public void verifyElementContainsText(String elementName, String pageName, String expectedText) throws Throwable {
+        try {
+            // Replace test data placeholders
+            elementName = replaceTestDataPlaceholders(elementName);
+            pageName = replaceTestDataPlaceholders(pageName);
+            String resolvedExpectedText = replaceTestDataPlaceholders(expectedText);
+            
+            logger.info("Verifying element {} on {} page contains text: {}", 
+                    elementName, pageName, resolvedExpectedText);
+            
+            // Find the element
+            WebElement element = findElement(elementName, pageName);
+            
+            // Get the text and verify
+            String actualText = element.getText();
+            
+            if (actualText.contains(resolvedExpectedText)) {
+                logger.info("Element contains expected text: {}", resolvedExpectedText);
+                ReportManager.logPass("Verify element text", 
+                    String.format("Element %s contains text: %s", elementName, resolvedExpectedText));
+            } else {
+                logger.error("Element text verification failed. Expected to contain: {}, Actual: {}", 
+                        resolvedExpectedText, actualText);
+                ReportManager.logFail("Verify element text", 
+                    String.format("Element text mismatch. Expected to contain: '%s', Actual: '%s'", 
+                            resolvedExpectedText, actualText));
+                throw new AssertionError("Element text verification failed. Expected to contain: " + 
+                        resolvedExpectedText + ", Actual: " + actualText);
+            }
+        } catch (Exception e) {
+            logger.error("Error verifying element contains text: {}", e.getMessage());
+            ReportManager.logFail("Verify element text", "Error: " + e.getMessage());
+            throw e;
+        }
+    }
+    
+    @When("I verify tooltip for {string} field on {string} page with expected text {string}")
+    public void verifyTooltip(String fieldName, String pageName, String expectedTooltip) throws Throwable {
+        fieldName = replaceTestDataPlaceholders(fieldName);
+        pageName = replaceTestDataPlaceholders(pageName);
+        expectedTooltip = replaceTestDataPlaceholders(expectedTooltip);
+
+        WebElement element = findElement(fieldName, pageName);
+        verifyTooltipAlternative(element, expectedTooltip, fieldName, pageName);
+    }
+    
+    @When("I verify info icon for {string} field on {string} page with expected text {string}")
+    public void verifyInfoIcon(String fieldName, String pageName, String expectedTooltip) throws Throwable {
+        fieldName = replaceTestDataPlaceholders(fieldName);
+        pageName = replaceTestDataPlaceholders(pageName);
+        expectedTooltip = replaceTestDataPlaceholders(expectedTooltip);
+
+        WebElement element = findElement(fieldName, pageName);
+        verifyTooltipAlternative(element, expectedTooltip, fieldName, pageName);
+    }
+    
+    @When("I click on {string} button on {string} page and wait until page title matches {string}")
+    public void clickButtonAndWaitForTitle(String buttonName, String pageName, String expectedTitle) throws Exception {
+        try {
+            buttonName = replaceTestDataPlaceholders(buttonName);
+            pageName = replaceTestDataPlaceholders(pageName);
+            expectedTitle = replaceTestDataPlaceholders(expectedTitle);
+
+            logger.info("Clicking button '{}' on page '{}'", buttonName, pageName);
+            logger.debug("Expected page title to match: '{}'", expectedTitle);
+
+            WebElement button = findElement(buttonName, pageName);
+            button.click();
+            logger.info("Clicked button '{}'", buttonName);
+            ReportManager.logInfo("Clicked button '" + buttonName + "' on page '" + pageName + "'");
+
+            int maxWaitSeconds = 60;
+            int pollIntervalSeconds = 6;
+            int elapsedTime = 0;
+            String actualTitle = "";
+
+            while (elapsedTime < maxWaitSeconds) {
+                try {
+                    Thread.sleep(pollIntervalSeconds * 1000L);
+                } catch (InterruptedException e) {
+                    logger.warn("Interrupted during sleep: {}", e.getMessage());
+                }
+
+                actualTitle = driver.getTitle();
+                logger.debug("Elapsed time: {} seconds | Current page title: '{}'", elapsedTime + pollIntervalSeconds, actualTitle);
+
+                if (actualTitle.equalsIgnoreCase(expectedTitle)) {
+                    break;
+                }
+
+                elapsedTime += pollIntervalSeconds;
+            }
+
+            if (actualTitle.equalsIgnoreCase(expectedTitle)) {
+                logger.info("Page title matched successfully: '{}'", actualTitle);
+                ReportManager.logPass("Verify page title", "Page title matched successfully: '" + actualTitle + "'");
+            } else {
+                logger.error("Expected page title '{}' not found within {} seconds after clicking '{}'", expectedTitle, maxWaitSeconds, buttonName);
+                ReportManager.logFail("Verify page title", "Expected page title '" + expectedTitle + "' not found within " + maxWaitSeconds + " seconds after clicking '" + buttonName + "'");
+                throw new Exception("Expected page title not matched within timeout.");
+            }
+
+        } catch (Exception e) {
+            logger.error("Error clicking button '{}' on page '{}': {}", buttonName, pageName, e.getMessage(), e);
+            ReportManager.logFail("Click and wait for title", "Failed to click button '" + buttonName + "' on page '" + pageName + "' - Error: " + e.getMessage());
+            throw new Exception("Failed to click button '" + buttonName + "' on page '" + pageName + "'", e);
+        }
+    }
+
+    @When("I enter text {string} in {string} field on {string} page and match with {string}")
+    public void enterTextAndMatchWithExpected(String enteredText, String fieldName, String pageName, String expectedText) throws Exception {
+        try {
+            // Resolve test data placeholders (from Excel or OR)
+            enteredText = replaceTestDataPlaceholders(enteredText);
+            expectedText = replaceTestDataPlaceholders(expectedText);
+            fieldName = replaceTestDataPlaceholders(fieldName);
+            pageName = replaceTestDataPlaceholders(pageName);
+
+            logger.info("Starting text entry and verification on page: '{}', field: '{}'", pageName, fieldName);
+            logger.debug("Text to enter (resolved): '{}'", enteredText);
+            logger.debug("Expected text to match (resolved): '{}'", expectedText);
+
+            // Step 1: Find the element
+            WebElement inputField = findElement(fieldName, pageName);
+
+            // Step 2: Clear and enter the text
+            inputField.clear();
+            inputField.sendKeys(enteredText);
+
+            // Step 3: Get the actual value from the field
+            String actualValue = inputField.getAttribute("value");
+            logger.debug("Actual value in field after input: '{}'", actualValue);
+
+            // Step 4: Match with expected text
+            if (!actualValue.equals(expectedText)) {
+                logger.error("Mismatch in field value. Entered: '{}', Expected: '{}', Actual: '{}'", enteredText, expectedText, actualValue);
+                throw new Exception("Field value does not match expected text.");
+            }
+
+            logger.info("Entered text is correctly restricted and matches expected text.");
+
+        } catch (Exception e) {
+            logger.error("Error entering or verifying text in field '{}' on page '{}': {}", fieldName, pageName, e.getMessage(), e);
+            throw new Exception("Text entry or match failed for field '" + fieldName + "' on page '" + pageName + "'", e);
+        }
+    }
+    
+    /**
+     * Clicks a Save button on a specified page and verifies the toast message using an element
+     * defined in the object repository. Compares the actual toast message with an expected message
+     * retrieved from test data (e.g., Excel).
+     *
+     * @param buttonId              The logical name or ID of the Save button from the Object Repository
+     * @param pageName              The page file name (e.g., "UserManagement.json") used to locate the Object Repository
+     * @param actualToastMessageKey The logical key for the toast message element in the Object Repository
+     * @param expectedMessageKey    The key used to fetch the expected toast message from test data
+     */
+    @Then("I click the {string} button on {string} page and verify toast using element {string} matches message from {string}")
+    public void click_save_and_verify_with_toast(String buttonId, String pageName, String actualToastMessageKey, String expectedMessageKey) {
+        try {
+            // Replace placeholders in parameters if any
+            buttonId = replaceTestDataPlaceholders(buttonId);
+            pageName = replaceTestDataPlaceholders(pageName);
+    	    actualToastMessageKey= replaceTestDataPlaceholders(actualToastMessageKey);
+            expectedMessageKey = replaceTestDataPlaceholders(expectedMessageKey);
+
+            logger.info("Clicking Save button '{}' on page '{}', expecting toast message for key '{}'", buttonId, pageName, expectedMessageKey);
+
+            // Find Save button from Object Repository
+            WebElement saveButton;
+            try {
+                saveButton = findElement(buttonId, pageName);
+            } catch (Exception e) {
+                logger.error("Save button '{}' not found on page '{}'", buttonId, pageName);
+                throw new RuntimeException("Save button not found: " + buttonId + " on page: " + pageName, e);
+            }
+
+            // Click Save button
+            try {
+                saveButton.click();
+                logger.info("Clicked Save button: {}", buttonId);
+            } catch (Exception e) {
+                logger.error("Failed to click Save button: {}", e.getMessage());
+                throw new RuntimeException("Click action failed for Save button: " + buttonId, e);
+            } 
+
+             // Wait and get toast message
+            String Key;
+            try {
+                WebElement toastElement = new WebDriverWait(driver, Duration.ofSeconds(30))
+                    .until(ExpectedConditions.visibilityOf(findElement(actualToastMessageKey, pageName)));
+                actualToastMessageKey = toastElement.getText().trim();
+                logger.info("Actual toast: {}", actualToastMessageKey);
+            } catch (TimeoutException te) {
+                throw new RuntimeException("Toast not found in time.", te);
+            }
+
+            // Match actual vs expected
+            if (actualToastMessageKey.equals(expectedMessageKey)) {
+                logger.info("Toast message matched the expected message.");
+                ReportManager.logPass("Record Save Verification", "Record saved successfully. Toast message matched: " + expectedMessageKey);
+            } else {
+                logger.warn("Toast message mismatch - Expected: '{}', Actual: '{}'", expectedMessageKey, actualToastMessageKey);
+                ReportManager.logFail("Record Save Failed", "Toast mismatch. Expected: " + expectedMessageKey + ", Actual: " + actualToastMessageKey);
+                throw new RuntimeException("Record save failed due to toast mismatch.");
+            }
+
+            // Visual demo delay
+            addDemoDelay();
+
+            // Take screenshot after save
+            try {
+                takeScreenshot("Toast Message - " + expectedMessageKey);
+            } catch (Throwable t) {
+                logger.error("Failed to capture screenshot after toast message: {}", t.getMessage());
+                throw new RuntimeException("Screenshot capture failed: " + t.getMessage(), t);
+            }
+
+        } catch (Exception e) {
+            logger.error("Save operation failed for button '{}': {}", buttonId, e.getMessage());
+            ReportManager.logFail("Save Operation Failed", "Error during save verification: " + e.getMessage());
+            throw new RuntimeException("Save operation error: " + e.getMessage(), e);
+        }
+    }
+    

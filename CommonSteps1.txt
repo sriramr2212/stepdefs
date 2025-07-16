@@ -1,0 +1,382 @@
+/**
+ * Framework Name: Novac Automation Framework
+ * Author: SriramR-NOVAC
+ * File Name: CommonSteps.java
+ * Description: Common step definitions with robust test case context management
+ */
+
+package com.novac.naf.steps;
+
+import com.novac.naf.config.ConfigLoader;
+import com.novac.naf.datamanager.DataManager;
+import com.novac.naf.datamanager.TestDataUtility;
+import com.novac.naf.orm.ORLoader;
+import com.novac.naf.reporting.ReportManager;
+import com.novac.naf.runner.TestCaseManager;
+import com.novac.naf.webdriver.WebDriverManager;
+import io.cucumber.java.After;
+import io.cucumber.java.Before;
+import io.cucumber.java.Scenario;
+import io.cucumber.java.en.Given;
+import io.cucumber.java.en.Then;
+import io.cucumber.java.en.When;
+
+import org.junit.Assert;
+import org.openqa.selenium.*;
+import org.openqa.selenium.interactions.Actions;
+import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.Select;
+import org.openqa.selenium.support.ui.WebDriverWait;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class CommonSteps {
+    private static final Logger logger = LoggerFactory.getLogger(CommonSteps.class);
+    private WebDriver driver;
+    private final ConfigLoader configLoader;
+    private final DataManager dataManager;
+    private Map<String, String> testData = new HashMap<>();
+    private String testCaseId;
+    private String screenshotsDir;
+    private Scenario scenario;
+	private ORLoader objectRepo;
+    
+    /**
+     * Constructor for CommonSteps with enhanced initialization
+     */
+    public CommonSteps() {
+        // Initialize configuration first
+        String excelPath = System.getProperty("excelPath", "./TestData/RunManager.xlsx");
+        logger.info("Initializing CommonSteps with Excel path: {}", excelPath);
+        
+        this.configLoader = new ConfigLoader(excelPath);
+        
+        // Initialize DataManager with configLoader
+        this.dataManager = new DataManager(configLoader);
+        logger.info("DataManager initialized successfully");
+        
+        // Initialize TestDataUtility with configLoader - this is crucial for test data resolution
+        TestDataUtility.initialize(configLoader);
+        logger.info("TestDataUtility initialized successfully");
+        
+        // Initialize WebDriverManager with configuration
+        WebDriverManager.initialize(configLoader);
+        
+        // Initialize ORLoader - ensure all page objects are loaded
+        ORLoader.initialize();
+        logger.info("ORLoader initialized successfully");
+        
+        // Set up screenshots directory using centralized timestamp
+        String timestamp = ReportManager.getCurrentTimestamp();
+        this.screenshotsDir = "./Reports/" + timestamp + "/screenshots";
+        
+        try {
+            Files.createDirectories(Paths.get(screenshotsDir));
+            logger.info("Screenshots directory set to: {}", screenshotsDir);
+        } catch (Exception e) {
+            logger.error("Failed to create screenshots directory: {}", e.getMessage());
+        }
+        
+        logger.info("CommonSteps initialization completed successfully");
+    }
+    
+    /**
+     * Get the WebDriver instance for use in other step classes
+     * 
+     * @return WebDriver instance
+     */
+    public WebDriver getDriver() {
+        return driver;
+    }
+    
+    /**
+     * Setup method to run before each scenario with enhanced test case ID extraction
+     * 
+     * @param scenario The Cucumber scenario
+     */
+    @Before
+    public void setup(Scenario scenario) {
+        this.scenario = scenario;
+        logger.info("Starting scenario: {}", scenario.getName());
+        
+        // Extract test case ID from tags with enhanced pattern matching
+        testCaseId = extractTestCaseId(scenario);
+        
+        // CRITICAL: Set the current test case ID in TestCaseManager for global access
+        if (testCaseId != null && !testCaseId.isEmpty()) {
+            TestCaseManager.setCurrentTestCaseId(testCaseId);
+            logger.info("Successfully set current test case ID in TestCaseManager: {}", testCaseId);
+        } else {
+            logger.error("CRITICAL: No test case ID found for scenario: {}", scenario.getName());
+            logger.error("Available tags: {}", scenario.getSourceTagNames());
+            
+            // Try to extract from scenario name as fallback
+            testCaseId = extractTestCaseIdFromScenarioName(scenario.getName());
+            if (testCaseId != null) {
+                TestCaseManager.setCurrentTestCaseId(testCaseId);
+                logger.warn("Used fallback test case ID from scenario name: {}", testCaseId);
+            } else {
+                throw new RuntimeException("No test case ID could be determined for scenario: " + scenario.getName() + ". Ensure proper @STATIMCM-TC-XXX or @TC_ID= tags are present.");
+            }
+        }
+        
+        // Load test data for this test case
+        loadTestData();
+        
+        // Start the test in ReportManager with the scenario name and test case ID
+        String testName = scenario.getName();
+        String testId = testCaseId != null ? testCaseId : "Unknown-TC";
+        
+        ReportManager.startTest(testId, testName);
+        logger.info("Started test in ReportManager: {} - {}", testId, testName);
+        
+        // Initialize WebDriver
+        driver = WebDriverManager.getDriver();
+        
+        logger.info("Setup completed successfully for scenario: {} with test case ID: {}", scenario.getName(), testCaseId);
+    }
+    
+    /**
+     * Extracts test case ID from scenario tags with enhanced pattern matching
+     * Supports multiple tag formats for robust test case identification
+     * 
+     * @param scenario The Cucumber scenario
+     * @return The test case ID or null if not found
+     */
+    private String extractTestCaseId(Scenario scenario) {
+        logger.debug("Extracting test case ID from scenario tags: {}", scenario.getSourceTagNames());
+        
+        for (String tag : scenario.getSourceTagNames()) {
+            logger.debug("Processing tag: {}", tag);
+            
+            // Pattern 1: @STATIMCM-TC-XXX format (current format)
+            if (tag.matches("@STATIMCM-TC-\\d+")) {
+                String tcId = tag.substring(1); // Remove @ prefix
+                logger.info("Found test case ID in direct tag format: {} -> {}", tag, tcId);
+                return tcId;
+            }
+            
+            // Pattern 2: @TC_ID=STATIMCM-TC-XXX format (legacy format)
+            if (tag.startsWith("@TC_ID=")) {
+                String tcId = tag.substring("@TC_ID=".length());
+                logger.info("Found test case ID in TC_ID tag format: {} -> {}", tag, tcId);
+                return tcId;
+            }
+            
+            // Pattern 3: Any tag containing STATIMCM-TC pattern
+            Pattern tcPattern = Pattern.compile("STATIMCM-TC-\\d+");
+            Matcher matcher = tcPattern.matcher(tag);
+            if (matcher.find()) {
+                String tcId = matcher.group();
+                logger.info("Found test case ID in pattern match: {} -> {}", tag, tcId);
+                return tcId;
+            }
+        }
+        
+        logger.warn("No test case ID found in any tag format for scenario: {}", scenario.getName());
+        logger.warn("Available tags: {}", scenario.getSourceTagNames());
+        return null;
+    }
+    
+    /**
+     * Attempts to extract test case ID from scenario name as fallback
+     * 
+     * @param scenarioName The scenario name
+     * @return The test case ID or null if not found
+     */
+    private String extractTestCaseIdFromScenarioName(String scenarioName) {
+        if (scenarioName == null || scenarioName.isEmpty()) {
+            return null;
+        }
+        
+        // Try to find STATIMCM-TC pattern in scenario name
+        Pattern tcPattern = Pattern.compile("STATIMCM-TC-\\d+");
+        Matcher matcher = tcPattern.matcher(scenarioName);
+        if (matcher.find()) {
+            String tcId = matcher.group();
+            logger.info("Extracted test case ID from scenario name: {} -> {}", scenarioName, tcId);
+            return tcId;
+        }
+        
+        logger.debug("No test case ID pattern found in scenario name: {}", scenarioName);
+        return null;
+    }
+    
+    /**
+     * Loads test data for the current scenario using multi-sheet architecture
+     */
+    private void loadTestData() {
+        testData = new HashMap<>();
+        String currentTestCaseId = this.testCaseId;
+        
+        if (currentTestCaseId != null && !currentTestCaseId.isEmpty()) {
+            logger.info("Loading test data for test case: {}", currentTestCaseId);
+            
+            try {
+                // Use the DataManager method to search across all available test data sheets
+                testData = dataManager.getTestDataFromAnySheet(currentTestCaseId);
+                
+                if (!testData.isEmpty()) {
+                    logger.info("Successfully loaded test data for {}: {}", currentTestCaseId, testData);
+                } else {
+                    logger.warn("No test data found for test case {} in any available sheets", currentTestCaseId);
+                    testData = new HashMap<>();
+                }
+                
+            } catch (Exception e) {
+                logger.error("Error loading test data for {}: {}", currentTestCaseId, e.getMessage(), e);
+                testData = new HashMap<>();
+            }
+        } else {
+            logger.error("No test case ID available for loading test data");
+            testData = new HashMap<>();
+        }
+    }
+    
+    /**
+     * Teardown method to run after each scenario
+     * 
+     * @param scenario The Cucumber scenario
+     */
+    @After
+    public void tearDown(Scenario scenario) {
+        try {
+            // Take screenshot if scenario failed or if screenshot mode is set to "all"
+            String screenshotMode = configLoader.getScreenshotMode();
+            boolean takeScreenshot = screenshotMode.equals("all") || 
+                                    (screenshotMode.equals("pass_fail") && scenario.isFailed());
+            
+            if (takeScreenshot && driver != null) {
+                byte[] screenshot = ((TakesScreenshot) driver).getScreenshotAs(OutputType.BYTES);
+                scenario.attach(screenshot, "image/png", "Screenshot-" + 
+                               LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")));
+                logger.info("Screenshot attached to scenario");
+            }
+            
+            // Clear the test case context
+            TestCaseManager.clearCurrentTestCaseId();
+            logger.info("Cleared test case context after scenario completion");
+            
+        } catch (Exception e) {
+            logger.error("Error in tearDown: {}", e.getMessage());
+        }
+    }
+    
+    /**
+     * Navigates to the specified URL with robust test data resolution
+     * 
+     * @param url The URL to navigate to (can contain test data placeholders like LoginPage.ApplicationURL)
+     * @throws Throwable if navigation fails
+     */
+    @Given("I navigate to {string}")
+    public void navigateTo(String url) throws Throwable {
+        try {
+            // Ensure test case context is available before processing test data
+            TestCaseManager.validateTestCaseIdSet();
+            
+            // Replace test data placeholders in the URL using enhanced resolution
+            String resolvedUrl = replaceTestDataPlaceholders(url);
+            logger.info("Navigating to URL: {} (resolved from: {})", resolvedUrl, url);
+            
+            // Validate that the URL was actually resolved if it looked like a data reference
+            if (isLikelyDataReference(url) && resolvedUrl.equals(url)) {
+                throw new RuntimeException("Test data reference in URL was not resolved: " + url + ". Check test data availability for test case: " + TestCaseManager.getCurrentTestCaseId());
+            }
+            
+            if (resolvedUrl.startsWith("http")) {
+                driver.get(resolvedUrl);
+            } else {
+                // If it's not an absolute URL, try to prepend the base URL
+                String baseUrl = configLoader.getBaseApplicationUrl();
+                if (baseUrl.endsWith("/") && resolvedUrl.startsWith("/")) {
+                    // Avoid double slash
+                    baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+                }
+                driver.get(baseUrl + resolvedUrl);
+            }
+            
+            ReportManager.logPass("Navigate to URL", "Successfully navigated to: " + resolvedUrl);
+        } catch (Exception e) {
+            logger.error("Error navigating to URL: {}", e.getMessage());
+            ReportManager.logFail("Navigate to URL", "Failed to navigate to: " + url + " - " + e.getMessage());
+            throw e;
+        }
+    }
+    
+    /**
+     * Public method to navigate to URL - accessible from other step classes
+     * 
+     * @param url The URL to navigate to
+     * @throws Throwable if navigation fails
+     */
+    public void navigateToUrl(String url) {
+        try {
+            logger.info("Navigating to URL: {}", url);
+
+            // Skip resolving test data if it's a direct URL
+            String finalUrl = (url.startsWith("http://") || url.startsWith("https://"))
+                    ? url
+                    : replaceTestDataPlaceholders(url);
+
+            driver.get(finalUrl);
+            logger.info("Successfully navigated to: {}", finalUrl);
+        } catch (Exception e) {
+            logger.error("Failed to navigate to URL: {}", url, e);
+            throw new RuntimeException("Navigation to URL failed: " + e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * Helper method to replace test data placeholders in strings with enhanced error handling
+     * 
+     * @param text String containing placeholders
+     * @return String with placeholders replaced by test data values
+     */
+    public String replaceTestDataPlaceholders(String input) {
+        try {
+            if (input != null && input.matches("^[A-Za-z0-9_]+\\.[A-Za-z0-9_]+$")) {
+                logger.debug("Resolving test data placeholder: {}", input);
+                String result = TestDataUtility.processTestDataReference(input);
+                logger.debug("Test data placeholder resolution: '{}' -> '{}'", input, result);
+                return result;
+            } else {
+                logger.debug("Skipping placeholder resolution for non-reference input: {}", input);
+                return input;
+            }
+        } catch (Exception e) {
+            logger.error("CRITICAL: Failed to replace test data placeholders in: '{}'", input, e);
+            throw new RuntimeException("Failed to resolve test data reference: " + input + " - " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Checks if a string looks like it might be a test data reference
+     * 
+     * @param text The text to check
+     * @return true if it appears to be a data reference
+     */
+    private boolean isLikelyDataReference(String text) {
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        
+        // Check for common data reference patterns
+        return text.contains(".") && 
+               (text.matches("^[A-Za-z]+\\.[A-Za-z]+.*") || 
+                text.contains("{{TD."));
+    }
+    
